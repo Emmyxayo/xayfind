@@ -455,12 +455,55 @@ function HomePage({navigate,spots,categories,activeCountry,setActiveCountry,load
   );
 }
 
+// Approximate coordinates for regions so map pins land in the right area
+const REGION_COORDS={
+  'Lagos':[6.5244,3.3792],'FCT – Abuja':[9.0765,7.3986],'Rivers':[4.8156,7.0498],'Kano':[12.0022,8.5920],
+  'Oyo':[8.1574,3.6147],'Anambra':[6.2209,6.9370],'Delta':[5.7040,5.9339],'Enugu':[6.5244,7.5186],
+  'Kaduna':[10.5105,7.4165],'Ogun':[7.1608,3.3483],'Imo':[5.5720,7.0588],'Edo':[6.3350,5.6037],
+  'London':[51.5074,-0.1278],'Manchester':[53.4808,-2.2426],'Edinburgh':[55.9533,-3.1883],
+  'Birmingham':[52.4862,-1.8904],'Glasgow':[55.8642,-4.2518],'Liverpool':[53.4084,-2.9916],
+  'Leeds':[53.8008,-1.5491],'Bristol':[51.4545,-2.5879],'Cardiff':[51.4816,-3.1791],
+  'New York':[40.7128,-74.0060],'California':[36.7783,-119.4179],'Texas':[31.9686,-99.9018],
+  'Florida':[27.6648,-81.5158],'Illinois':[40.6331,-89.3985],'Washington':[47.7511,-120.7401],
+  'Massachusetts':[42.4072,-71.3824],'Georgia':[32.1656,-82.9001],'Nevada':[38.8026,-116.4194],
+};
+
+function MapView({spots,categories,navigate}){
+  const mapRef=useRef(null);
+  const containerRef=useRef(null);
+  useEffect(()=>{
+    if(!window.L||!containerRef.current)return;
+    const L=window.L;
+    if(!mapRef.current){
+      mapRef.current=L.map(containerRef.current).setView([20,0],2);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors',maxZoom:19}).addTo(mapRef.current);
+    }
+    const map=mapRef.current;
+    map.eachLayer(layer=>{if(layer instanceof L.Marker)map.removeLayer(layer);});
+    const bounds=[];
+    spots.forEach(s=>{
+      const coords=REGION_COORDS[s.region];
+      if(!coords)return;
+      const lat=coords[0]+(Math.random()-0.5)*0.08;
+      const lng=coords[1]+(Math.random()-0.5)*0.08;
+      const cat=categories.find(c=>c.id===s.categoryId);
+      const marker=L.marker([lat,lng]).addTo(map);
+      marker.bindPopup(`<div style="font-family:sans-serif;min-width:160px"><div style="font-size:22px">${cat?.icon||'📍'}</div><div style="font-weight:700;font-size:14px;margin:4px 0">${s.name}</div><div style="font-size:12px;color:#666">${cat?.name||''} · ${s.region}</div><div style="font-size:12px;margin-top:4px">⭐ ${s.rating?.toFixed(1)||'—'}</div><button id="spot-btn-${s.id}" style="margin-top:8px;background:#FF5C00;color:#fff;border:none;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:12px;width:100%">View details →</button></div>`);
+      marker.on('popupopen',()=>{const btn=document.getElementById(`spot-btn-${s.id}`);if(btn)btn.onclick=()=>navigate('spot',{id:s.id});});
+      bounds.push([lat,lng]);
+    });
+    if(bounds.length>0)map.fitBounds(bounds,{padding:[50,50],maxZoom:12});
+  },[spots,categories,navigate]);
+  return <div ref={containerRef} style={{height:'600px',width:'100%',borderRadius:'var(--radius-lg)',overflow:'hidden',border:'1px solid var(--border)'}}/>;
+}
+
 function BrowsePage({navigate,spots,categories,loading}){
   const [selCat,setSelCat]=useState('all');
   const [selRegion,setSelRegion]=useState('all');
   const [selCountry,setSelCountry]=useState('all');
   const [search,setSearch]=useState('');
   const [sortBy,setSortBy]=useState('featured');
+  const [view,setView]=useState('list');
   const regions=selCountry==='all'?[]:(REGIONS[selCountry]||[]);
   let filtered=(spots||[]).filter(s=>{
     const cOk=selCountry==='all'||s.country===selCountry;
@@ -488,6 +531,10 @@ function BrowsePage({navigate,spots,categories,loading}){
           <option value="rating">Top rated</option>
           <option value="newest">Newest</option>
         </select>
+        <div style={{display:'flex',gap:4,background:'var(--dark3)',border:'1px solid var(--border)',borderRadius:8,padding:3}}>
+          <button onClick={()=>setView('list')} style={{background:view==='list'?'var(--orange)':'transparent',color:view==='list'?'#fff':'var(--text2)',border:'none',borderRadius:6,padding:'7px 14px',fontSize:13,cursor:'pointer',fontFamily:'var(--font-body)'}}>☰ List</button>
+          <button onClick={()=>setView('map')} style={{background:view==='map'?'var(--orange)':'transparent',color:view==='map'?'#fff':'var(--text2)',border:'none',borderRadius:6,padding:'7px 14px',fontSize:13,cursor:'pointer',fontFamily:'var(--font-body)'}}>🗺️ Map</button>
+        </div>
       </div>
       <div className="chip-row" style={{marginBottom:14}}>
         <span className={`chip ${selCat==='all'?'active':''}`} onClick={()=>setSelCat('all')}>All</span>
@@ -500,9 +547,11 @@ function BrowsePage({navigate,spots,categories,loading}){
         </div>
       )}
       <p style={{color:'var(--text2)',fontSize:13,marginBottom:20}}>{loading?'Loading...':`${filtered.length} spot${filtered.length!==1?'s':''} found`}</p>
-      {loading?<Spinner/>:filtered.length>0
-        ?<div className="spots-grid">{filtered.map(s=><SpotCard key={s.id} spot={s} navigate={navigate} categories={categories}/>)}</div>
-        :<div className="empty"><div className="empty-icon">🔍</div><h3>No spots found</h3><p>Try different filters.</p></div>
+      {loading?<Spinner/>:view==='map'
+        ?(filtered.length>0?<MapView spots={filtered} categories={categories} navigate={navigate}/>:<div className="empty"><div className="empty-icon">🗺️</div><h3>No spots to map</h3></div>)
+        :filtered.length>0
+          ?<div className="spots-grid">{filtered.map(s=><SpotCard key={s.id} spot={s} navigate={navigate} categories={categories}/>)}</div>
+          :<div className="empty"><div className="empty-icon">🔍</div><h3>No spots found</h3><p>Try different filters.</p></div>
       }
     </div>
   );
@@ -552,6 +601,22 @@ function SpotDetailPage({id,navigate,spots,setSpots,categories}){
     setSubmitting(false);
   };
   const copyLink=()=>{navigator.clipboard?.writeText(window.location.href);setCopied(true);setTimeout(()=>setCopied(false),2000);};
+
+  // Build a search string for maps from the spot's address + region + country
+  const mapsQuery=encodeURIComponent(`${spot.name}, ${spot.address}, ${spot.region}`);
+
+  // Open Google Maps with directions from the user's CURRENT location to the spot
+  const getDirections=()=>{
+    // This URL tells Google Maps "directions to this destination" — it auto-detects the user's live location as the start point
+    const url=`https://www.google.com/maps/dir/?api=1&destination=${mapsQuery}&travelmode=driving`;
+    window.open(url,'_blank');
+  };
+
+  // Open the spot's location on a map (no directions, just show it)
+  const openInMaps=()=>{
+    const url=`https://www.google.com/maps/search/?api=1&query=${mapsQuery}`;
+    window.open(url,'_blank');
+  };
   return(
     <div>
       <div className="spot-detail-hero">
@@ -637,6 +702,25 @@ function SpotDetailPage({id,navigate,spots,setSpots,categories}){
                 <button className="btn-secondary btn-sm" style={{flex:1}} onClick={()=>setSaved(s=>!s)}>{saved?'❤️ Saved':'🤍 Save'}</button>
                 <button className="btn-secondary btn-sm" style={{flex:1}} onClick={copyLink}>{copied?'✓ Copied!':'🔗 Share'}</button>
               </div>
+            </div>
+
+            {/* Location & Directions */}
+            <div className="info-card">
+              <h3 className="info-card-title">📍 Location & Directions</h3>
+              <div style={{borderRadius:'var(--radius)',overflow:'hidden',border:'1px solid var(--border)',marginBottom:14}}>
+                <iframe
+                  title={`Map of ${spot.name}`}
+                  width="100%"
+                  height="200"
+                  style={{border:0,display:'block'}}
+                  loading="lazy"
+                  src={`https://www.openstreetmap.org/export/embed.html?bbox=${REGION_COORDS[spot.region]?[REGION_COORDS[spot.region][1]-0.05,REGION_COORDS[spot.region][0]-0.04,REGION_COORDS[spot.region][1]+0.05,REGION_COORDS[spot.region][0]+0.04].join(','):'2.9,6.4,3.6,6.7'}&layer=mapnik&marker=${REGION_COORDS[spot.region]?REGION_COORDS[spot.region].join(','):'6.5244,3.3792'}`}
+                />
+              </div>
+              <p style={{fontSize:13,color:'var(--text2)',marginBottom:14}}>📌 {spot.address}, {spot.region}</p>
+              <button className="btn-primary" style={{width:'100%',marginBottom:10}} onClick={getDirections}>🧭 Get Directions</button>
+              <button className="btn-secondary btn-sm" style={{width:'100%'}} onClick={openInMaps}>🗺️ Open in Google Maps</button>
+              <p style={{fontSize:11,color:'var(--muted)',marginTop:10,textAlign:'center'}}>Directions open in Google Maps using your current location.</p>
             </div>
             {related.length>0&&(
               <div className="info-card">
@@ -733,9 +817,9 @@ function BlogPostPage({id,navigate,categories}){
 
 function PricingPage({navigate}){
   const plans=[
-    {id:'basic',name:'Basic',price:'₦15,000',priceUK:'£25',priceUS:'$30',featured:false,features:['Standard listing','1 photo','Category visibility','Monthly analytics','WhatsApp button']},
-    {id:'featured',name:'Featured',price:'₦35,000',priceUK:'£55',priceUS:'$65',featured:true,features:['Featured badge','Up to 10 photos','Homepage spotlight','Priority search','Weekly analytics','Verified tick','Deal posting']},
-    {id:'premium',name:'Premium',price:'₦65,000',priceUK:'£100',priceUS:'$120',featured:false,features:['Everything in Featured','Dedicated landing page','Social media feature','Top of category','Daily analytics','Dedicated support']},
+    {id:'basic',name:'Basic',price:'₦15,000',priceUK:'£9',priceUS:'$11',featured:false,features:['Standard listing','1 photo','Category visibility','Monthly analytics','WhatsApp button']},
+    {id:'featured',name:'Featured',price:'₦30,000',priceUK:'£16',priceUS:'$21',featured:true,features:['Featured badge','Up to 10 photos','Homepage spotlight','Priority search','Weekly analytics','Verified tick','Deal posting']},
+    {id:'premium',name:'Premium',price:'₦50,000',priceUK:'£27',priceUS:'$34',featured:false,features:['Everything in Featured','Dedicated landing page','Social media feature','Top of category','Daily analytics','Dedicated support']},
   ];
   return(
     <div className="section">
