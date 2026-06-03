@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import './App.css';
 import { supabase } from './supabaseClient';
 import { COUNTRIES, REGIONS, BLOG_POSTS } from './data/locations';
+import { Analytics } from '@vercel/analytics/react';
 
 const DEFAULT_CATEGORIES = [
   { id:"hotels",      name:"Hotels",             icon:"🏨" },
@@ -1291,6 +1292,7 @@ function App(){
         {page==='admin'&&<AdminPanel navigate={navigate} spots={spots} setSpots={setSpots} categories={categories} setCategories={setCategories}/>}
       </main>
       {!isDashboard&&!isAuth&&<Footer navigate={navigate} categories={categories}/>}
+      <Analytics />
     </div>
   );
 }
