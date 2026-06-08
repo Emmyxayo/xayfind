@@ -49,9 +49,15 @@ function dbToSpot(row) {
     dealExpiry: row.deal_expiry||'', hours: row.hours||{},
     rating: row.rating||0, reviews: row.reviews||[],
     referredBy: row.referred_by||'', vendorId: row.vendor_id||null,
+    pendingChanges: row.pending_changes||null,
     createdAt: new Date(row.created_at).getTime(),
   };
 }
+
+// Fields a vendor is allowed to edit on their own listing (everything except
+// admin-only flags like featured/verified/plan/status/category/owner).
+const EDITABLE_FIELDS=['name','address','phone','website','instagram','tags','images','desc','deal','dealExpiry','hours'];
+function pickEditable(spot){const o={};EDITABLE_FIELDS.forEach(k=>{o[k]=spot[k];});return o;}
 
 function spotToDB(spot) {
   return {
@@ -993,6 +999,8 @@ function AdminPanel({navigate,spots,setSpots,categories,setCategories}){
   const [saving,setSaving]=useState(false);
   const [newCat,setNewCat]=useState({name:'',icon:''});
   const [accounts,setAccounts]=useState([]);   // registered user/vendor accounts (for assigning owners)
+  const [reviewId,setReviewId]=useState(null); // spot id currently being reviewed in Approvals
+  const [reviewForm,setReviewForm]=useState(null); // editable copy of the proposed changes
   const flash=msg=>{setSuccess(msg);setTimeout(()=>setSuccess(''),3500);};
   // Load the list of accounts so the admin can assign a spot to a vendor.
   useEffect(()=>{
@@ -1035,7 +1043,29 @@ function AdminPanel({navigate,spots,setSpots,categories,setCategories}){
   };
   const deleteCategory=async id=>{await supabase.from('categories').delete().eq('id',id);setCategories(prev=>prev.filter(c=>c.id!==id));};
 
-  const tabs=[{id:'vendors',icon:'🏢',label:'Vendors'},{id:'add',icon:'➕',label:'Add vendor'},{id:'categories',icon:'🏷️',label:'Categories'},{id:'analytics',icon:'📈',label:'Analytics'}];
+  // --- Vendor edit approvals ---
+  const pendingSpots=spots.filter(s=>s.pendingChanges);
+  const openReview=s=>{setReviewId(s.id);setReviewForm({...pickEditable(s),...s.pendingChanges});};
+  const closeReview=()=>{setReviewId(null);setReviewForm(null);};
+  const approveEdit=async()=>{
+    const s=spots.find(x=>x.id===reviewId);if(!s)return;
+    setSaving(true);
+    const merged={...s,...reviewForm};
+    const {error}=await supabase.from('spots').update({...spotToDB(merged),pending_changes:null}).eq('id',s.id);
+    if(error)flash('❌ '+error.message);
+    else{setSpots(prev=>prev.map(x=>x.id===s.id?{...merged,pendingChanges:null}:x));closeReview();flash('✓ Changes approved & published!');}
+    setSaving(false);
+  };
+  const discardEdit=async()=>{
+    const s=spots.find(x=>x.id===reviewId);if(!s)return;
+    setSaving(true);
+    const {error}=await supabase.from('spots').update({pending_changes:null}).eq('id',s.id);
+    if(error)flash('❌ '+error.message);
+    else{setSpots(prev=>prev.map(x=>x.id===s.id?{...x,pendingChanges:null}:x));closeReview();flash('Edit discarded.');}
+    setSaving(false);
+  };
+
+  const tabs=[{id:'vendors',icon:'🏢',label:'Vendors'},{id:'add',icon:'➕',label:'Add vendor'},{id:'approvals',icon:'✅',label:`Approvals${pendingSpots.length?` (${pendingSpots.length})`:''}`},{id:'categories',icon:'🏷️',label:'Categories'},{id:'analytics',icon:'📈',label:'Analytics'}];
 
   return(
     <div className="dashboard-layout">
@@ -1203,6 +1233,46 @@ function AdminPanel({navigate,spots,setSpots,categories,setCategories}){
           </div>
         )}
 
+        {tab==='approvals'&&(
+          <div>
+            {reviewForm?(
+              <div>
+                <div className="dash-header"><button className="back-btn" onClick={closeReview}>← Back</button><h2>Review edit: {spots.find(x=>x.id===reviewId)?.name}</h2><p>The vendor's proposed changes. Adjust anything if needed, then approve to publish.</p></div>
+                <div style={{background:'var(--dark2)',border:'1px solid var(--border)',borderRadius:16,padding:32,maxWidth:800}}>
+                  <ListingFields value={reviewForm} onChange={setReviewForm}/>
+                  <div style={{display:'flex',gap:12,marginTop:8}}>
+                    <button className="btn-primary" style={{padding:'12px 28px'}} onClick={approveEdit} disabled={saving}>{saving?'Publishing...':'✓ Approve & Publish'}</button>
+                    <button className="action-btn danger" style={{padding:'12px 28px'}} onClick={discardEdit} disabled={saving}>Discard edit</button>
+                  </div>
+                </div>
+              </div>
+            ):(
+              <div>
+                <div className="dash-header"><h2>Pending Approvals</h2><p>Edits submitted by vendors. The live site is unchanged until you approve.</p></div>
+                {pendingSpots.length>0?(
+                  <div style={{background:'var(--dark2)',border:'1px solid var(--border)',borderRadius:16,overflow:'hidden'}}>
+                    <table className="admin-table">
+                      <thead><tr><th>Business</th><th>Owner</th><th>Region</th><th>Action</th></tr></thead>
+                      <tbody>
+                        {pendingSpots.map(s=>(
+                          <tr key={s.id}>
+                            <td style={{fontWeight:600}}>{s.name}</td>
+                            <td style={{color:'var(--text2)'}}>{accounts.find(a=>a.id===s.vendorId)?.email||'—'}</td>
+                            <td>{s.region}</td>
+                            <td><button className="action-btn" onClick={()=>openReview(s)}>Review</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ):(
+                  <div className="empty" style={{padding:48}}><div className="empty-icon">✅</div><h3>No pending edits</h3><p>Vendor changes will show up here for your approval.</p></div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {tab==='categories'&&(
           <div>
             <div className="dash-header" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
@@ -1263,6 +1333,69 @@ function AdminPanel({navigate,spots,setSpots,categories,setCategories}){
   );
 }
 
+// Shared editable form for the vendor-controllable listing fields.
+// Used both by the vendor (to propose changes) and the admin (to review/publish).
+function ListingFields({value,onChange}){
+  const set=(k,v)=>onChange({...value,[k]:v});
+  const DAYS=[['mon','Monday'],['tue','Tuesday'],['wed','Wednesday'],['thu','Thursday'],['fri','Friday'],['sat','Saturday'],['sun','Sunday']];
+  return(
+    <>
+      <div className="form-group" style={{marginBottom:24}}><label style={{fontSize:15,fontWeight:600,color:'var(--text)',marginBottom:12,display:'block'}}>📷 Photos</label><ImageUploader images={value.images||[]} onChange={imgs=>set('images',imgs)}/></div>
+      <div className="form-group"><label>Business Name</label><input value={value.name||''} onChange={e=>set('name',e.target.value)}/></div>
+      <div className="form-group"><label>Address</label><input value={value.address||''} onChange={e=>set('address',e.target.value)}/></div>
+      <div className="form-row">
+        <div className="form-group"><label>Phone</label><input value={value.phone||''} onChange={e=>set('phone',e.target.value)}/></div>
+        <div className="form-group"><label>Website</label><input value={value.website||''} onChange={e=>set('website',e.target.value)}/></div>
+      </div>
+      <div className="form-group"><label>Instagram</label><input value={value.instagram||''} onChange={e=>set('instagram',e.target.value)}/></div>
+      <div className="form-group"><label>Tags</label><TagInput tags={value.tags||[]} onChange={t=>set('tags',t)}/></div>
+      <div className="form-group"><label>Description</label><textarea value={value.desc||''} onChange={e=>set('desc',e.target.value)}/></div>
+      <div className="form-row">
+        <div className="form-group"><label>🏷️ Deal</label><input placeholder="e.g. 20% off Mondays" value={value.deal||''} onChange={e=>set('deal',e.target.value)}/></div>
+        <div className="form-group"><label>Deal Expiry</label><input type="date" value={value.dealExpiry||''} onChange={e=>set('dealExpiry',e.target.value)}/></div>
+      </div>
+      <div className="form-group"><label style={{marginBottom:10,display:'block'}}>⏰ Opening Hours</label>
+        <div style={{display:'grid',gap:8}}>
+          {DAYS.map(([key,label])=>(
+            <div key={key} style={{display:'grid',gridTemplateColumns:'100px 1fr',gap:10,alignItems:'center'}}>
+              <span style={{fontSize:13,color:'var(--text2)'}}>{label}</span>
+              <input placeholder="9:00–18:00 or Closed" value={value.hours?.[key]||''} onChange={e=>set('hours',{...value.hours,[key]:e.target.value})}/>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// Vendor's own edit screen. Saves the proposed changes to `pending_changes`
+// (the live listing is untouched until an admin approves).
+function VendorEditListing({spot,setSpots,onDone}){
+  const [form,setForm]=useState(spot.pendingChanges?{...pickEditable(spot),...spot.pendingChanges}:pickEditable(spot));
+  const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState('');
+  const submit=async()=>{
+    setBusy(true);setErr('');
+    const proposed={};EDITABLE_FIELDS.forEach(k=>{proposed[k]=form[k];});
+    const {error}=await supabase.from('spots').update({pending_changes:proposed}).eq('id',spot.id);
+    if(error){setErr(error.message);setBusy(false);return;}
+    setSpots(prev=>prev.map(s=>s.id===spot.id?{...s,pendingChanges:proposed}:s));
+    setBusy(false);
+    onDone();
+  };
+  return(
+    <div style={{background:'var(--dark2)',border:'1px solid var(--border)',borderRadius:16,padding:32,maxWidth:800}}>
+      <div className="alert" style={{background:'rgba(234,179,8,0.1)',border:'1px solid rgba(234,179,8,0.3)',color:'var(--yellow)',marginBottom:24}}>⏳ Your changes are sent to the XayFind team for approval. They go live once approved — your current listing stays visible until then.</div>
+      {err&&<div className="alert alert-error">{err}</div>}
+      <ListingFields value={form} onChange={setForm}/>
+      <div style={{display:'flex',gap:12,marginTop:8}}>
+        <button className="btn-primary" style={{padding:'12px 28px'}} onClick={submit} disabled={busy}>{busy?'Submitting...':'Submit for approval'}</button>
+        <button className="btn-secondary" style={{padding:'12px 28px'}} onClick={onDone}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 function VendorSettings({session,profile}){
   const currentName=profile?.full_name||session?.user?.user_metadata?.full_name||'';
   const [name,setName]=useState(currentName);
@@ -1300,11 +1433,13 @@ function VendorSettings({session,profile}){
   );
 }
 
-function VendorDashboard({navigate,spots,categories,session,profile}){
+function VendorDashboard({navigate,spots,setSpots,categories,session,profile}){
   const [tab,setTab]=useState('overview');
+  const [editingId,setEditingId]=useState(null);
   // Only the listings this vendor owns (assigned by the admin via vendor_id).
   const myspots=(spots||[]).filter(s=>s.vendorId&&s.vendorId===session?.user?.id);
   const spot=myspots[0];
+  const editingSpot=myspots.find(s=>s.id===editingId);
   const tabs=[{id:'overview',icon:'📊',label:'Overview'},{id:'billing',icon:'💳',label:'Billing'},{id:'referral',icon:'👥',label:'Referrals'},{id:'settings',icon:'⚙️',label:'Settings'}];
   return(
     <div className="dashboard-layout">
@@ -1317,7 +1452,13 @@ function VendorDashboard({navigate,spots,categories,session,profile}){
         {tab==='overview'&&(
           <div>
             <div className="dash-header"><h2>My Listing{myspots.length>1?'s':''}</h2></div>
-            {myspots.length===0?(
+            {editingSpot?(
+              <>
+                <button className="back-btn" onClick={()=>setEditingId(null)}>← Back to my listings</button>
+                <h3 style={{fontFamily:'var(--font-display)',fontSize:20,fontWeight:700,margin:'8px 0 18px'}}>Edit: {editingSpot.name}</h3>
+                <VendorEditListing spot={editingSpot} setSpots={setSpots} onDone={()=>setEditingId(null)}/>
+              </>
+            ):myspots.length===0?(
               <div className="empty" style={{padding:48}}>
                 <div className="empty-icon">🏢</div>
                 <h3>No listing assigned to your account yet</h3>
@@ -1333,20 +1474,24 @@ function VendorDashboard({navigate,spots,categories,session,profile}){
                 {myspots.map(ms=>{
                   const mcat=categories.find(c=>c.id===ms.categoryId);
                   return(
-                    <div key={ms.id} className="info-card" style={{cursor:'pointer'}} onClick={()=>navigate('spot',{id:ms.id})}>
-                      <div style={{display:'flex',gap:16,alignItems:'center'}}>
+                    <div key={ms.id} className="info-card">
+                      <div style={{display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
                         <div style={{width:60,height:50,borderRadius:10,overflow:'hidden',background:'var(--dark3)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:26,flexShrink:0}}>
                           {ms.images&&ms.images.length>0?<img src={ms.images[0]} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:mcat?.icon||'📍'}
                         </div>
                         <div>
                           <div style={{fontFamily:'var(--font-display)',fontSize:19,fontWeight:700}}>{ms.name}</div>
                           <div style={{color:'var(--text2)',fontSize:13}}>📍 {ms.region} {COUNTRIES.find(c=>c.id===ms.country)?.flag}</div>
-                          <div style={{marginTop:8,display:'flex',gap:6}}>
+                          <div style={{marginTop:8,display:'flex',gap:6,flexWrap:'wrap'}}>
                             {ms.featured&&<span className="spot-badge badge-featured">⭐ Featured</span>}
                             {ms.verified&&<span className="spot-badge badge-verified">✓ Verified</span>}
+                            {ms.pendingChanges&&<span className="spot-badge badge-deal">⏳ Edit pending approval</span>}
                           </div>
                         </div>
-                        <div style={{marginLeft:'auto'}}><span className={`status-pill ${ms.status==='active'?'status-active':'status-inactive'}`}>● {ms.status}</span></div>
+                        <div style={{marginLeft:'auto',display:'flex',gap:8}}>
+                          <button className="btn-secondary btn-sm" onClick={()=>navigate('spot',{id:ms.id})}>View</button>
+                          <button className="btn-primary btn-sm" onClick={()=>setEditingId(ms.id)}>Edit listing</button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -1470,7 +1615,7 @@ function App(){
         {page==='about'&&<AboutPage navigate={navigate} spots={spots} categories={categories}/>}
         {page==='auth'&&<AuthPage navigate={navigate} onAuthed={handleAuthed}/>}
         {page==='saved'&&<SavedPage navigate={navigate} spots={spots} categories={categories} savedIds={savedIds} session={session}/>}
-        {page==='vendor-dashboard'&&(session&&profileLoading?<Spinner/>:(role==='vendor'||role==='admin')?<VendorDashboard navigate={navigate} spots={spots} categories={categories} session={session} profile={profile}/>:<AccessDenied navigate={navigate}/>)}
+        {page==='vendor-dashboard'&&(session&&profileLoading?<Spinner/>:(role==='vendor'||role==='admin')?<VendorDashboard navigate={navigate} spots={spots} setSpots={setSpots} categories={categories} session={session} profile={profile}/>:<AccessDenied navigate={navigate}/>)}
         {page==='admin'&&(session&&profileLoading?<Spinner/>:role==='admin'?<AdminPanel navigate={navigate} spots={spots} setSpots={setSpots} categories={categories} setCategories={setCategories}/>:<AccessDenied navigate={navigate}/>)}
       </main>
       {!isDashboard&&!isAuth&&<Footer navigate={navigate} categories={categories}/>}
