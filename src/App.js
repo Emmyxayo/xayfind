@@ -48,7 +48,8 @@ function dbToSpot(row) {
     tags: row.tags||[], images: row.images||[], deal: row.deal||'',
     dealExpiry: row.deal_expiry||'', hours: row.hours||{},
     rating: row.rating||0, reviews: row.reviews||[],
-    referredBy: row.referred_by||'', createdAt: new Date(row.created_at).getTime(),
+    referredBy: row.referred_by||'', vendorId: row.vendor_id||null,
+    createdAt: new Date(row.created_at).getTime(),
   };
 }
 
@@ -62,6 +63,7 @@ function spotToDB(spot) {
     tags: spot.tags||[], images: spot.images||[], deal: spot.deal||'',
     deal_expiry: spot.dealExpiry||'', hours: spot.hours||{},
     rating: spot.rating||0, reviews: spot.reviews||[], referred_by: spot.referredBy||'',
+    vendor_id: spot.vendorId||null,
   };
 }
 
@@ -165,7 +167,7 @@ function useRouter() {
   return {page,params,navigate};
 }
 
-function Navbar({navigate,activeCountry,setActiveCountry}){
+function Navbar({navigate,activeCountry,setActiveCountry,session,profile,onLogout}){
   const [showDrop,setShowDrop]=useState(false);
   const country=COUNTRIES.find(c=>c.id===activeCountry)||COUNTRIES[0];
   return(
@@ -196,7 +198,15 @@ function Navbar({navigate,activeCountry,setActiveCountry}){
             </div>
           )}
         </div>
-        <button className="nav-btn" onClick={()=>navigate('vendor-login')}>Vendor Login</button>
+        {!session&&<button className="nav-btn" onClick={()=>navigate('auth')}>Login</button>}
+        {session&&(
+          <>
+            {profile?.role==='admin'&&<button className="nav-link" onClick={()=>navigate('admin')}>Admin</button>}
+            {profile?.role==='vendor'&&<button className="nav-link" onClick={()=>navigate('vendor-dashboard')}>Dashboard</button>}
+            <button className="nav-link" onClick={()=>navigate('saved')}>♥ Saved</button>
+            <button className="nav-btn" onClick={onLogout}>Logout</button>
+          </>
+        )}
       </div>
     </nav>
   );
@@ -222,7 +232,7 @@ function Footer({navigate,categories}){
           <h4>Vendors</h4>
           <span onClick={()=>navigate('pricing')}>Pricing Plans</span>
           <span onClick={()=>navigate('contact')}>List Your Spot</span>
-          <span onClick={()=>navigate('vendor-login')}>Vendor Login</span>
+          <span onClick={()=>navigate('auth')}>Vendor Login</span>
         </div>
         <div className="footer-col">
           <h4>Company</h4>
@@ -372,7 +382,7 @@ function HomePage({navigate,spots,categories,activeCountry,setActiveCountry,load
         <p className="section-sub">Verified, top-rated spots raising the bar.</p>
         {loading?<Spinner/>:featured.length>0
           ?<div className="spots-grid">{featured.slice(0,6).map(s=><SpotCard key={s.id} spot={s} navigate={navigate} categories={categories}/>)}</div>
-          :<div className="empty"><div className="empty-icon">🌟</div><h3>No featured spots yet</h3><p>Add your first vendor from the <span className="link" onClick={()=>navigate('vendor-login')}>admin panel</span>.</p></div>
+          :<div className="empty"><div className="empty-icon">🌟</div><h3>No featured spots yet</h3><p>Add your first vendor from the <span className="link" onClick={()=>navigate('auth')}>admin panel</span>.</p></div>
         }
       </div>
 
@@ -574,12 +584,11 @@ function CategoryPage({cat,navigate,spots,categories,loading}){
   );
 }
 
-function SpotDetailPage({id,navigate,spots,setSpots,categories}){
+function SpotDetailPage({id,navigate,spots,setSpots,categories,session,savedIds,onToggleSave}){
   const [activeImg,setActiveImg]=useState(0);
   const [reviewText,setReviewText]=useState('');
   const [reviewName,setReviewName]=useState('');
   const [reviewStars,setReviewStars]=useState(5);
-  const [saved,setSaved]=useState(false);
   const [copied,setCopied]=useState(false);
   const [submitting,setSubmitting]=useState(false);
   const spot=spots.find(s=>s.id===Number(id));
@@ -699,7 +708,7 @@ function SpotDetailPage({id,navigate,spots,setSpots,categories}){
                 <a href={`https://wa.me/${spot.phone.replace(/\D/g,'')}`} target="_blank" rel="noreferrer" style={{flex:1,textDecoration:'none'}}><button className="btn-secondary btn-sm" style={{width:'100%'}}>💬 WhatsApp</button></a>
               </div>
               <div style={{display:'flex',gap:10,marginTop:10}}>
-                <button className="btn-secondary btn-sm" style={{flex:1}} onClick={()=>setSaved(s=>!s)}>{saved?'❤️ Saved':'🤍 Save'}</button>
+                <button className="btn-secondary btn-sm" style={{flex:1}} onClick={()=>onToggleSave(spot.id)}>{savedIds.includes(spot.id)?'❤️ Saved':session?'🤍 Save':'🤍 Save to favourites'}</button>
                 <button className="btn-secondary btn-sm" style={{flex:1}} onClick={copyLink}>{copied?'✓ Copied!':'🔗 Share'}</button>
               </div>
             </div>
@@ -893,31 +902,86 @@ function ContactPage(){
   );
 }
 
-function VendorLoginPage({navigate}){
+function AuthPage({navigate,onAuthed}){
+  const [mode,setMode]=useState('login');   // 'login' or 'signup'
   const [email,setEmail]=useState('');
   const [pass,setPass]=useState('');
+  const [name,setName]=useState('');
   const [err,setErr]=useState('');
-  const login=e=>{
+  const [msg,setMsg]=useState('');
+  const [busy,setBusy]=useState(false);
+  const switchMode=m=>{setMode(m);setErr('');setMsg('');};
+  const submit=async e=>{
     e.preventDefault();
-    if(email==='admin@xayfind.com'&&pass==='admin123')navigate('admin');
-    else if(email==='vendor@xayfind.com'&&pass==='vendor123')navigate('vendor-dashboard');
-    else setErr('Invalid credentials. Admin: admin@xayfind.com / admin123');
+    setErr('');setMsg('');setBusy(true);
+    try{
+      if(mode==='login'){
+        // Real Supabase email + password sign in
+        const {data,error}=await supabase.auth.signInWithPassword({email,password:pass});
+        if(error)throw error;
+        // Look up this user's role so we can send them to the right place
+        const {data:prof}=await supabase.from('profiles').select('role').eq('id',data.user.id).single();
+        onAuthed(prof?.role||'user');
+      }else{
+        // Real Supabase sign up — a 'profiles' row is created automatically by a DB trigger
+        const {data,error}=await supabase.auth.signUp({email,password:pass,options:{data:{full_name:name}}});
+        if(error)throw error;
+        if(!data.session){
+          // Email confirmation is ON in Supabase — user must confirm before they can sign in
+          setMsg('✓ Account created! Check your email to confirm it, then sign in.');
+          setMode('login');
+        }else{
+          onAuthed('user');
+        }
+      }
+    }catch(error){
+      setErr(error.message||'Something went wrong. Please try again.');
+    }
+    setBusy(false);
   };
   return(
     <div className="auth-wrap">
       <div className="auth-card">
         <div className="auth-logo">Xay<span>Find</span></div>
-        <div className="auth-title">Welcome back</div>
-        <p className="auth-sub">Sign in to manage your listing.</p>
+        <div className="auth-title">{mode==='login'?'Welcome back':'Create your account'}</div>
+        <p className="auth-sub">{mode==='login'?'Sign in to manage listings or save your favourite spots.':'Sign up free to save your favourite spots.'}</p>
+        <div style={{display:'flex',gap:6,background:'var(--dark3)',border:'1px solid var(--border)',borderRadius:10,padding:4,marginBottom:20}}>
+          <button type="button" onClick={()=>switchMode('login')} style={{flex:1,padding:9,borderRadius:7,border:'none',cursor:'pointer',fontFamily:'var(--font-body)',fontSize:14,fontWeight:600,background:mode==='login'?'var(--orange)':'transparent',color:mode==='login'?'#fff':'var(--text2)'}}>Sign In</button>
+          <button type="button" onClick={()=>switchMode('signup')} style={{flex:1,padding:9,borderRadius:7,border:'none',cursor:'pointer',fontFamily:'var(--font-body)',fontSize:14,fontWeight:600,background:mode==='signup'?'var(--orange)':'transparent',color:mode==='signup'?'#fff':'var(--text2)'}}>Sign Up</button>
+        </div>
         {err&&<div className="alert alert-error">{err}</div>}
-        <form onSubmit={login}>
-          <div className="form-group"><label>Email</label><input type="email" required placeholder="admin@xayfind.com" value={email} onChange={e=>setEmail(e.target.value)}/></div>
-          <div className="form-group"><label>Password</label><input type="password" required placeholder="••••••••" value={pass} onChange={e=>setPass(e.target.value)}/></div>
-          <button type="submit" className="btn-primary" style={{width:'100%',padding:14,marginTop:8}}>Sign In →</button>
+        {msg&&<div className="alert alert-success">{msg}</div>}
+        <form onSubmit={submit}>
+          {mode==='signup'&&<div className="form-group"><label>Full Name</label><input placeholder="Your name" value={name} onChange={e=>setName(e.target.value)}/></div>}
+          <div className="form-group"><label>Email</label><input type="email" required placeholder="you@email.com" value={email} onChange={e=>setEmail(e.target.value)}/></div>
+          <div className="form-group"><label>Password</label><input type="password" required minLength={6} placeholder="At least 6 characters" value={pass} onChange={e=>setPass(e.target.value)}/></div>
+          <button type="submit" className="btn-primary" style={{width:'100%',padding:14,marginTop:8}} disabled={busy}>{busy?'Please wait...':mode==='login'?'Sign In →':'Create Account →'}</button>
         </form>
-        <p style={{textAlign:'center',marginTop:16,fontSize:12,color:'var(--muted)'}}>Admin: admin@xayfind.com / admin123</p>
       </div>
     </div>
+  );
+}
+
+function SavedPage({navigate,spots,categories,savedIds,session}){
+  if(!session)return(
+    <div className="section"><div className="empty"><div className="empty-icon">🔒</div><h3>Sign in to see your saved spots</h3><p><span className="link" onClick={()=>navigate('auth')}>Login or sign up →</span></p></div></div>
+  );
+  const savedSpots=(spots||[]).filter(s=>savedIds.includes(s.id));
+  return(
+    <div className="section">
+      <div className="section-label">Your collection</div>
+      <h2 className="section-title">❤️ Saved Spots</h2>
+      <p className="section-sub">{savedSpots.length} saved spot{savedSpots.length!==1?'s':''}</p>
+      {savedSpots.length>0
+        ?<div className="spots-grid">{savedSpots.map(s=><SpotCard key={s.id} spot={s} navigate={navigate} categories={categories}/>)}</div>
+        :<div className="empty"><div className="empty-icon">🤍</div><h3>No saved spots yet</h3><p>Tap the 🤍 Save button on any spot to add it here.</p></div>}
+    </div>
+  );
+}
+
+function AccessDenied({navigate}){
+  return(
+    <div className="section"><div className="empty"><div className="empty-icon">🚫</div><h3>You don't have access to this area</h3><p><span className="link" onClick={()=>navigate('home')}>← Back to home</span></p></div></div>
   );
 }
 
@@ -928,8 +992,13 @@ function AdminPanel({navigate,spots,setSpots,categories,setCategories}){
   const [success,setSuccess]=useState('');
   const [saving,setSaving]=useState(false);
   const [newCat,setNewCat]=useState({name:'',icon:''});
+  const [accounts,setAccounts]=useState([]);   // registered user/vendor accounts (for assigning owners)
   const flash=msg=>{setSuccess(msg);setTimeout(()=>setSuccess(''),3500);};
-  const blank={name:'',categoryId:'',country:'nigeria',region:'',address:'',phone:'',website:'',instagram:'',plan:'basic',featured:false,verified:false,tags:[],images:[],desc:'',deal:'',dealExpiry:'',status:'active',rating:0,reviews:[],referredBy:'',hours:{mon:'9:00–18:00',tue:'9:00–18:00',wed:'9:00–18:00',thu:'9:00–18:00',fri:'9:00–18:00',sat:'10:00–16:00',sun:'Closed'}};
+  // Load the list of accounts so the admin can assign a spot to a vendor.
+  useEffect(()=>{
+    supabase.from('profiles').select('id,email,role').order('email').then(({data})=>{if(data)setAccounts(data);});
+  },[]);
+  const blank={name:'',categoryId:'',country:'nigeria',region:'',address:'',phone:'',website:'',instagram:'',plan:'basic',featured:false,verified:false,tags:[],images:[],desc:'',deal:'',dealExpiry:'',status:'active',rating:0,reviews:[],referredBy:'',vendorId:'',hours:{mon:'9:00–18:00',tue:'9:00–18:00',wed:'9:00–18:00',thu:'9:00–18:00',fri:'9:00–18:00',sat:'10:00–16:00',sun:'Closed'}};
   const [addForm,setAddForm]=useState(blank);
   const setAdd=(k,v)=>setAddForm(f=>({...f,[k]:v}));
   const regions=addForm.country?(REGIONS[addForm.country]||[]):[];
@@ -1041,6 +1110,13 @@ function AdminPanel({navigate,spots,setSpots,categories,setCategories}){
                 <div className="form-group"><label>Website</label><input value={editSpot.website} onChange={e=>setEditSpot(v=>({...v,website:e.target.value}))}/></div>
                 <div className="form-group"><label>Instagram</label><input value={editSpot.instagram} onChange={e=>setEditSpot(v=>({...v,instagram:e.target.value}))}/></div>
               </div>
+              <div className="form-group"><label>👤 Owner account (vendor)</label>
+                <select value={editSpot.vendorId||''} onChange={e=>setEditSpot(v=>({...v,vendorId:e.target.value||null}))}>
+                  <option value="">— Unassigned —</option>
+                  {accounts.map(a=><option key={a.id} value={a.id}>{a.email} ({a.role})</option>)}
+                </select>
+                <p style={{fontSize:12,color:'var(--muted)',marginTop:6}}>This vendor will see only this listing in their dashboard.</p>
+              </div>
               <div className="form-group"><label>Tags</label><TagInput tags={editSpot.tags||[]} onChange={t=>setEditSpot(v=>({...v,tags:t}))}/></div>
               <div className="form-group"><label>Description</label><textarea value={editSpot.desc} onChange={e=>setEditSpot(v=>({...v,desc:e.target.value}))}/></div>
               <div className="form-row">
@@ -1090,6 +1166,13 @@ function AdminPanel({navigate,spots,setSpots,categories,setCategories}){
               <div className="form-row">
                 <div className="form-group"><label>Website</label><input placeholder="www.business.com" value={addForm.website} onChange={e=>setAdd('website',e.target.value)}/></div>
                 <div className="form-group"><label>Instagram</label><input placeholder="@yourbusiness" value={addForm.instagram} onChange={e=>setAdd('instagram',e.target.value)}/></div>
+              </div>
+              <div className="form-group"><label>👤 Owner account (vendor)</label>
+                <select value={addForm.vendorId||''} onChange={e=>setAdd('vendorId',e.target.value)}>
+                  <option value="">— Unassigned —</option>
+                  {accounts.map(a=><option key={a.id} value={a.id}>{a.email} ({a.role})</option>)}
+                </select>
+                <p style={{fontSize:12,color:'var(--muted)',marginTop:6}}>Assign later if the vendor hasn't signed up yet.</p>
               </div>
               <div className="form-group"><label>Tags</label><TagInput tags={addForm.tags} onChange={t=>setAdd('tags',t)}/></div>
               <div className="form-group"><label>Description</label><textarea placeholder="What makes this spot special?" value={addForm.desc} onChange={e=>setAdd('desc',e.target.value)}/></div>
@@ -1180,10 +1263,48 @@ function AdminPanel({navigate,spots,setSpots,categories,setCategories}){
   );
 }
 
-function VendorDashboard({navigate,spots,categories}){
+function VendorSettings({session,profile}){
+  const currentName=profile?.full_name||session?.user?.user_metadata?.full_name||'';
+  const [name,setName]=useState(currentName);
+  const [pass,setPass]=useState('');
+  const [msg,setMsg]=useState('');
+  const [err,setErr]=useState('');
+  const [busy,setBusy]=useState(false);
+  const save=async()=>{
+    setMsg('');setErr('');setBusy(true);
+    try{
+      if(pass&&pass.length<6)throw new Error('Password must be at least 6 characters.');
+      // updateUser only ever changes the logged-in user's OWN account — safe, no extra policies needed.
+      const payload={data:{full_name:name}};
+      if(pass)payload.password=pass;
+      const {error}=await supabase.auth.updateUser(payload);
+      if(error)throw error;
+      setPass('');
+      setMsg('✓ Settings saved.');
+    }catch(e){setErr(e.message||'Could not save settings.');}
+    setBusy(false);
+  };
+  return(
+    <div><div className="dash-header"><h2>Settings</h2></div>
+      <div className="info-card">
+        {msg&&<div className="alert alert-success">{msg}</div>}
+        {err&&<div className="alert alert-error">{err}</div>}
+        <div className="form-row">
+          <div className="form-group"><label>Full Name</label><input value={name} onChange={e=>setName(e.target.value)} placeholder="Your name"/></div>
+          <div className="form-group"><label>Email</label><input value={session?.user?.email||''} disabled style={{opacity:.6,cursor:'not-allowed'}}/></div>
+        </div>
+        <div className="form-group"><label>New Password</label><input type="password" value={pass} onChange={e=>setPass(e.target.value)} placeholder="Leave blank to keep current" minLength={6}/></div>
+        <button className="btn-primary btn-sm" onClick={save} disabled={busy}>{busy?'Saving...':'Save Settings'}</button>
+      </div>
+    </div>
+  );
+}
+
+function VendorDashboard({navigate,spots,categories,session,profile}){
   const [tab,setTab]=useState('overview');
-  const spot=spots[0];
-  const cat=spot?categories.find(c=>c.id===spot.categoryId):null;
+  // Only the listings this vendor owns (assigned by the admin via vendor_id).
+  const myspots=(spots||[]).filter(s=>s.vendorId&&s.vendorId===session?.user?.id);
+  const spot=myspots[0];
   const tabs=[{id:'overview',icon:'📊',label:'Overview'},{id:'billing',icon:'💳',label:'Billing'},{id:'referral',icon:'👥',label:'Referrals'},{id:'settings',icon:'⚙️',label:'Settings'}];
   return(
     <div className="dashboard-layout">
@@ -1195,35 +1316,48 @@ function VendorDashboard({navigate,spots,categories}){
       <div className="dash-content">
         {tab==='overview'&&(
           <div>
-            <div className="dash-header"><h2>My Listing</h2></div>
-            <div className="stats-row">
-              {[{label:'Profile Views',value:'1,284',change:'↑ 12%'},{label:'WhatsApp Clicks',value:'87',change:'↑ 5%'},{label:'Phone Clicks',value:'43',change:'↑ 8%'},{label:'Review Score',value:spot?.rating?.toFixed(1)||'—',change:`${spot?.reviews?.length||0} reviews`}].map(s=>(
-                <div key={s.label} className="stat-card"><div className="stat-label">{s.label}</div><div className="stat-value">{s.value}</div><div className="stat-change">{s.change}</div></div>
-              ))}
-            </div>
-            {spot&&(
-              <div className="info-card">
-                <div style={{display:'flex',gap:16,alignItems:'center'}}>
-                  <div style={{width:60,height:50,borderRadius:10,overflow:'hidden',background:'var(--dark3)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:26,flexShrink:0}}>
-                    {spot.images&&spot.images.length>0?<img src={spot.images[0]} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:cat?.icon||'📍'}
-                  </div>
-                  <div>
-                    <div style={{fontFamily:'var(--font-display)',fontSize:19,fontWeight:700}}>{spot.name}</div>
-                    <div style={{color:'var(--text2)',fontSize:13}}>📍 {spot.region} {COUNTRIES.find(c=>c.id===spot.country)?.flag}</div>
-                    <div style={{marginTop:8,display:'flex',gap:6}}>
-                      {spot.featured&&<span className="spot-badge badge-featured">⭐ Featured</span>}
-                      {spot.verified&&<span className="spot-badge badge-verified">✓ Verified</span>}
-                    </div>
-                  </div>
-                  <div style={{marginLeft:'auto'}}><span className="status-pill status-active">● Active</span></div>
-                </div>
+            <div className="dash-header"><h2>My Listing{myspots.length>1?'s':''}</h2></div>
+            {myspots.length===0?(
+              <div className="empty" style={{padding:48}}>
+                <div className="empty-icon">🏢</div>
+                <h3>No listing assigned to your account yet</h3>
+                <p>Once the XayFind team links a spot to your account, it will appear here.<br/><span className="link" onClick={()=>navigate('contact')}>Contact us →</span></p>
               </div>
+            ):(
+              <>
+                <div className="stats-row">
+                  {[{label:'Profile Views',value:'1,284',change:'↑ 12%'},{label:'WhatsApp Clicks',value:'87',change:'↑ 5%'},{label:'Phone Clicks',value:'43',change:'↑ 8%'},{label:'Review Score',value:spot?.rating?.toFixed(1)||'—',change:`${spot?.reviews?.length||0} reviews`}].map(s=>(
+                    <div key={s.label} className="stat-card"><div className="stat-label">{s.label}</div><div className="stat-value">{s.value}</div><div className="stat-change">{s.change}</div></div>
+                  ))}
+                </div>
+                {myspots.map(ms=>{
+                  const mcat=categories.find(c=>c.id===ms.categoryId);
+                  return(
+                    <div key={ms.id} className="info-card" style={{cursor:'pointer'}} onClick={()=>navigate('spot',{id:ms.id})}>
+                      <div style={{display:'flex',gap:16,alignItems:'center'}}>
+                        <div style={{width:60,height:50,borderRadius:10,overflow:'hidden',background:'var(--dark3)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:26,flexShrink:0}}>
+                          {ms.images&&ms.images.length>0?<img src={ms.images[0]} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:mcat?.icon||'📍'}
+                        </div>
+                        <div>
+                          <div style={{fontFamily:'var(--font-display)',fontSize:19,fontWeight:700}}>{ms.name}</div>
+                          <div style={{color:'var(--text2)',fontSize:13}}>📍 {ms.region} {COUNTRIES.find(c=>c.id===ms.country)?.flag}</div>
+                          <div style={{marginTop:8,display:'flex',gap:6}}>
+                            {ms.featured&&<span className="spot-badge badge-featured">⭐ Featured</span>}
+                            {ms.verified&&<span className="spot-badge badge-verified">✓ Verified</span>}
+                          </div>
+                        </div>
+                        <div style={{marginLeft:'auto'}}><span className={`status-pill ${ms.status==='active'?'status-active':'status-inactive'}`}>● {ms.status}</span></div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
             )}
           </div>
         )}
         {tab==='billing'&&(<div><div className="dash-header"><h2>Billing</h2></div><div className="info-card"><div style={{fontFamily:'var(--font-display)',fontSize:20,fontWeight:700,marginBottom:4}}>Featured Plan</div><div style={{color:'var(--text2)',fontSize:14,marginBottom:16}}>₦35,000 / month</div><span className="status-pill status-active">● Active</span><div style={{marginTop:20,display:'flex',gap:10}}><button className="btn-primary btn-sm">Upgrade Plan</button><button className="btn-secondary btn-sm">Update Payment</button></div></div></div>)}
         {tab==='referral'&&(<div><div className="dash-header"><h2>Referral Programme</h2></div><div className="referral-card"><div style={{fontFamily:'var(--font-display)',fontSize:20,fontWeight:700,marginBottom:8}}>Your Referral Code</div><div style={{fontSize:28,fontWeight:800,color:'var(--orange)',letterSpacing:4,marginBottom:12}}>XAYREF-001</div><p style={{color:'var(--text2)',fontSize:14,marginBottom:16}}>Refer another business and get <strong style={{color:'var(--text)'}}>1 free month</strong>.</p><button className="btn-primary btn-sm">Copy Referral Link</button></div></div>)}
-        {tab==='settings'&&(<div><div className="dash-header"><h2>Settings</h2></div><div className="info-card"><div className="form-row"><div className="form-group"><label>Full Name</label><input defaultValue="Demo Vendor"/></div><div className="form-group"><label>Email</label><input defaultValue="vendor@xayfind.com"/></div></div><div className="form-group"><label>New Password</label><input type="password" placeholder="Leave blank to keep current"/></div><button className="btn-primary btn-sm">Save Settings</button></div></div>)}
+        {tab==='settings'&&<VendorSettings session={session} profile={profile}/>}
       </div>
     </div>
   );
@@ -1254,6 +1388,10 @@ function App(){
   const [categories,setCategories]=useState(DEFAULT_CATEGORIES);
   const [activeCountry,setActiveCountry]=useState('all');
   const [loading,setLoading]=useState(true);
+  const [session,setSession]=useState(null);   // Supabase auth session (null = logged out)
+  const [profile,setProfile]=useState(null);   // row from the 'profiles' table (holds the role)
+  const [profileLoading,setProfileLoading]=useState(false); // true while we fetch the profile for a session
+  const [savedIds,setSavedIds]=useState([]);    // spot ids this user has saved
 
   useEffect(()=>{
     const loadData=async()=>{
@@ -1269,26 +1407,71 @@ function App(){
     loadData();
   },[]);
 
+  // Track login/logout. onAuthStateChange also fires once on load with the current session.
+  useEffect(()=>{
+    const {data:{subscription}}=supabase.auth.onAuthStateChange((_event,sess)=>setSession(sess));
+    return ()=>subscription.unsubscribe();
+  },[]);
+
+  // Whenever the logged-in user changes, load their profile (role) and their saved spots.
+  useEffect(()=>{
+    if(!session){setProfile(null);setSavedIds([]);setProfileLoading(false);return;}
+    let active=true;
+    setProfileLoading(true);
+    (async()=>{
+      const {data:prof}=await supabase.from('profiles').select('*').eq('id',session.user.id).single();
+      const {data:saved}=await supabase.from('saved_spots').select('spot_id').eq('user_id',session.user.id);
+      if(!active)return;
+      setProfile(prof||null);
+      setSavedIds(saved?saved.map(r=>r.spot_id):[]);
+      setProfileLoading(false);
+    })();
+    return ()=>{active=false;};
+  },[session]);
+
+  // After a successful login/signup, send the user to the right place for their role.
+  const handleAuthed=role=>{
+    if(role==='admin')navigate('admin');
+    else if(role==='vendor')navigate('vendor-dashboard');
+    else navigate('home');
+  };
+
+  const logout=async()=>{await supabase.auth.signOut();navigate('home');};
+
+  // Save / unsave a spot for the logged-in user (persists to the saved_spots table).
+  const toggleSave=async spotId=>{
+    if(!session){navigate('auth');return;}   // must be signed in to save
+    if(savedIds.includes(spotId)){
+      setSavedIds(prev=>prev.filter(id=>id!==spotId));
+      await supabase.from('saved_spots').delete().eq('user_id',session.user.id).eq('spot_id',spotId);
+    }else{
+      setSavedIds(prev=>[...prev,spotId]);
+      await supabase.from('saved_spots').insert({user_id:session.user.id,spot_id:spotId});
+    }
+  };
+
+  const role=profile?.role;
   const isDashboard=['vendor-dashboard','admin'].includes(page);
-  const isAuth=page==='vendor-login';
+  const isAuth=page==='auth';
 
   return(
     <div style={{display:'flex',flexDirection:'column',minHeight:'100vh'}}>
-      {!isDashboard&&<Navbar navigate={navigate} activeCountry={activeCountry} setActiveCountry={setActiveCountry}/>}
+      {!isDashboard&&<Navbar navigate={navigate} activeCountry={activeCountry} setActiveCountry={setActiveCountry} session={session} profile={profile} onLogout={logout}/>}
       <main style={{flex:1}}>
         {page==='home'&&<HomePage navigate={navigate} spots={spots} categories={categories} activeCountry={activeCountry} setActiveCountry={setActiveCountry} loading={loading}/>}
         {page==='browse'&&<BrowsePage navigate={navigate} spots={spots} categories={categories} loading={loading}/>}
         {page==='category'&&<CategoryPage cat={params.cat} navigate={navigate} spots={spots} categories={categories} loading={loading}/>}
-        {page==='spot'&&<SpotDetailPage id={params.id} navigate={navigate} spots={spots} setSpots={setSpots} categories={categories}/>}
+        {page==='spot'&&<SpotDetailPage id={params.id} navigate={navigate} spots={spots} setSpots={setSpots} categories={categories} session={session} savedIds={savedIds} onToggleSave={toggleSave}/>}
         {page==='deals'&&<DealsPage navigate={navigate} spots={spots} categories={categories} loading={loading}/>}
         {page==='blog'&&<BlogPage navigate={navigate} categories={categories}/>}
         {page==='blog-post'&&<BlogPostPage id={params.id} navigate={navigate} categories={categories}/>}
         {page==='pricing'&&<PricingPage navigate={navigate}/>}
         {page==='contact'&&<ContactPage navigate={navigate}/>}
         {page==='about'&&<AboutPage navigate={navigate} spots={spots} categories={categories}/>}
-        {page==='vendor-login'&&<VendorLoginPage navigate={navigate}/>}
-        {page==='vendor-dashboard'&&<VendorDashboard navigate={navigate} spots={spots} categories={categories}/>}
-        {page==='admin'&&<AdminPanel navigate={navigate} spots={spots} setSpots={setSpots} categories={categories} setCategories={setCategories}/>}
+        {page==='auth'&&<AuthPage navigate={navigate} onAuthed={handleAuthed}/>}
+        {page==='saved'&&<SavedPage navigate={navigate} spots={spots} categories={categories} savedIds={savedIds} session={session}/>}
+        {page==='vendor-dashboard'&&(session&&profileLoading?<Spinner/>:(role==='vendor'||role==='admin')?<VendorDashboard navigate={navigate} spots={spots} categories={categories} session={session} profile={profile}/>:<AccessDenied navigate={navigate}/>)}
+        {page==='admin'&&(session&&profileLoading?<Spinner/>:role==='admin'?<AdminPanel navigate={navigate} spots={spots} setSpots={setSpots} categories={categories} setCategories={setCategories}/>:<AccessDenied navigate={navigate}/>)}
       </main>
       {!isDashboard&&!isAuth&&<Footer navigate={navigate} categories={categories}/>}
     </div>
